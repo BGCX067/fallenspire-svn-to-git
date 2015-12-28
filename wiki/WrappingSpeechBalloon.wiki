@@ -1,0 +1,275 @@
+#summary Dynamically renders and wraps text inside a speech balloon.
+
+{{{
+
+# Renders text inside of a speech balloon. The text is automatically wrapped
+# into the proper shape.
+
+import sys
+import time
+import pygame
+import math
+import numpy
+from numpy.linalg import norm
+
+
+# Returns the roots of a quadratic of the form:
+#
+#    y = a*x**2 + b*x + c
+#
+def solve_quadratic(a, b, c):
+    n = math.sqrt(b**2 - 4*a*c)
+    return ((-b+n)/(2*a), (-b-n)/(2*a))
+
+# Finds the intersection point of a line and an ellipse. This returns the
+# point closest to (x0, y0).
+def intersect_line_ellipse(A, B, (x0, y0), (dx, dy)):
+    # Turn everything into floats to avoid rounding errors
+    A = float(A)
+    B = float(B)
+    x0 = float(x0)
+    y0 = float(y0)
+    dx = float(dx)
+    dy = float(dy)
+
+    if (dx == 0 and dy == 0):
+        return None
+
+    a = dx**2/A**2 + dy**2/B**2
+    b = 2*(dx*x0/A**2 + dy*y0/B**2)
+    c = -1 + (x0**2/A**2) + (y0**2/B**2)
+    (r1, r2) = solve_quadratic(a, b, c)
+    if (abs(r1) < abs(r2)):
+        return r1
+    return r2
+
+
+# Returns a surface filled with the given color, but having the same
+# alpha channel as the given image.
+def set_color(img, color):
+    newsurf = pygame.Surface(img.get_size()).convert_alpha()
+    newsurf.fill(color)
+    alpha = pygame.surfarray.pixels_alpha(img)
+    pygame.surfarray.pixels_alpha(newsurf)[:] = alpha
+    return newsurf
+
+
+class SpeechBalloon(object):
+    # This controls how wide the spout is
+    spoutSpread = 40
+    # The fill color of the speech balloon
+    bgcolor = (255,255,255)
+    # The border color
+    borderColor = (0, 0, 0)
+    # The starting position (tip of the spout)
+    start = None
+    # The ending position (center of the ellipse)
+    end = None
+    # The speech balloon surface
+    surf = None
+    # The offset into the surface of the location of the spout's tip
+    tipOffset = None
+    # The region occupied by the ball of the speech balloon (offset within
+    # the surface).
+    ballRect = None
+    # The amount of padding to add around the ellipse
+    padding = 40
+
+    def __init__(this, (w, h), vec):
+        this.ellipseSize = (w + this.padding, h + this.padding)
+        this.spoutVec = vec
+
+    def create(this):
+        (w, h) = this.ellipseSize
+
+        # Figure out how big to make the surface
+        spoutVec = this.spoutVec
+        spoutLen = norm(spoutVec)
+
+        ballRect = pygame.Rect(0, 0, 0, 0)
+        ballRect.size = (w, h)
+        ballRect.center = (0, 0)
+
+        rect = ballRect.union(pygame.Rect((spoutVec, (0, 0))))
+
+        surf = pygame.Surface(rect.size).convert_alpha()
+        surf.fill((0,0,0,0))
+
+        center = numpy.array((-rect.x, -rect.y))
+        ballRect.center = center
+
+        pygame.draw.ellipse(surf, this.bgcolor, ballRect)
+        pygame.draw.ellipse(surf, this.borderColor, ballRect, 1)
+
+        # Figure out where the tip of the spout is located
+        tipOffset = center + spoutVec
+
+        perp = numpy.array((spoutVec[1], -spoutVec[0]))
+        perp = (this.spoutSpread/2) * perp/norm(perp)
+
+        # Now draw the spout
+        pts = (tipOffset,
+               center + perp.astype("int"),
+               center - perp.astype("int"))
+        pygame.draw.polygon(surf, this.bgcolor, pts, 0)
+
+        # Draw a line from a point to the ellipse of the speech balloon
+        def draw_to_ellipse(pt1, pt2):
+            # Use the equation of the ellipse to determine if the starting
+            # point is inside (in which case we don't want to bother 
+            # rendering anything).
+            if ((pt1[0]-center[0])**2/(w/2.0)**2 +
+                (pt1[1]-center[1])**2/(h/2.0)**2 <= 1):
+                return
+
+            # Calculate the intersection point
+            try:
+                n = intersect_line_ellipse(w/2, h/2, pt1-center, pt2-pt1)
+            except:
+                return
+
+            # Calculate the point on the ellipse and draw the line
+            pt = pt1 + n*(pt2-pt1)
+            pygame.draw.line(surf, this.borderColor,
+                             pt1.astype("int"),
+                             pt.astype("int"))
+
+        draw_to_ellipse(pts[0], pts[1])
+        draw_to_ellipse(pts[0], pts[2])
+
+        this.tipOffset = tipOffset
+        this.ballRect = ballRect
+        this.surf = surf
+
+# Split up the string into lines in an attempt to fit it inside of an 
+# ellipse. The arguments are:
+#
+# * txt    = the text to format
+# * width  = the length (in characters) of the longest line
+# * nlines = a guess at the number of lines that will fit
+#
+# If this function cannot properly fit the text it will return None. You
+# don't need to call this function directly - use 'format_text' below.
+#
+def format_text_attempt(txt, width, nlines):
+    def calc_ellipse(a, b, y):
+        return math.sqrt((a**2) * (1-y**2/b**2))
+
+    pos = 0
+    line = 0
+    lines = []
+    while (pos < len(txt)):
+        try:
+            x = calc_ellipse(width/2.0, nlines/2.0, line-nlines/2.0)
+        except ValueError:
+            return None
+        nchars = int(round(2*x))
+
+        # Take as many words as we can, up to 'nchars'.
+        if (pos+nchars >= len(txt)):
+            # Take everything to the end of the string
+            last = len(txt)
+        else:
+            i = txt.rfind(" ", pos, pos+nchars)
+            if (i == -1):
+                # No spaces left, take the whole substring
+                last = pos+nchars
+            else:
+                # Take the substring
+                last = i+1
+
+        if (last > pos):
+            lines.append(txt[pos:last])
+        pos = last
+        line += 1
+    return lines
+
+# Formats the given text inside of an ellipse. The 'width' argument is the
+# length of the longest line.
+def format_text(txt, width):
+    n = 1
+    while 1:
+        lines = format_text_attempt(txt, width, n)
+        if (lines != None):
+            return lines
+        n += 1
+
+# Renders some text into an elliptical shape.
+def render_wrapped_text(font, txt, nchars):
+    # Now automatically wrap the text so it fits in an ellipse
+    lines = format_text(txt, nchars)
+    # Render each line of text into it's own surface
+    surfs = []
+    width = 0
+    height = 0
+    for line in lines:
+        surf = font.render(line, True, (0,0,0))
+        surfs.append(surf)
+        # Keep track of the width and height
+        width = max(width, surf.get_width())
+        height += surf.get_height()
+    # Create a surface large enough to fit all the text
+    img = pygame.Surface((width, height)).convert_alpha()
+    img.fill((0,0,0,0))
+    y = 0
+    for surf in surfs:
+        # Make the line centered in the text box
+        x = width/2 - surf.get_width()/2
+        img.blit(surf, (x, y))
+        y += surf.get_height()
+    return img
+
+
+if (__name__ == "__main__"):
+    pygame.init()
+    display = pygame.display.set_mode((640,480))
+    display.fill((0,0,0))
+
+    # Render the text we want to display. This function will automatically
+    # wrap it into an elliptical shape. You can control it's overall size 
+    # and shape with the width parameter (maximum number of characters in
+    # the longest line of text).
+    txt = "Lorem ipsum dolor sit amet, consectetur adipisicing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua."
+
+    font = pygame.font.SysFont("sans", 16)
+    textImage = render_wrapped_text(font, txt, 30)
+
+    balloon = None
+    lastPos = None
+    done = False
+    while not done:
+        # Process events
+        for event in pygame.event.get():
+            if (event.type == pygame.KEYDOWN and
+                event.key == pygame.K_ESCAPE or 
+                event.type == pygame.QUIT):
+                done = True
+                break
+
+        # Create a speech balloon stretching from the center of the screen
+        # to the mouse cursor.
+        pos = pygame.mouse.get_pos()
+        if (pos != lastPos):
+            # Note it's somewhat inefficient to do this on every frame (done 
+            # here just for fun). Normally you would create this object once, 
+            # then re-use the rendered image.
+            (w, h) = textImage.get_size()
+            start = display.get_rect().center
+            balloon = SpeechBalloon((w, h), numpy.array(start)-numpy.array(pos))
+            balloon.create()
+            balloon.start = start
+            # Render some text in the balloon
+            r = textImage.get_rect()
+            r.center = balloon.ballRect.center
+            balloon.surf.blit(textImage, r)
+            lastPos = pos
+
+        # Now render the balloon and text on the display
+        (xp, yp) = balloon.start
+        display.fill((220,220,255))
+        r = display.blit(balloon.surf, 
+                     (xp-balloon.tipOffset[0], yp-balloon.tipOffset[1]))
+
+        pygame.display.flip()
+
+}}}

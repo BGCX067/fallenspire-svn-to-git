@@ -1,0 +1,292 @@
+#summary Renders a speech balloon using Cairo
+
+{{{
+
+# Renders text inside of a speech balloon. The text is automatically wrapped
+# into the proper shape.
+
+import array
+import sys
+import time
+import pygame
+import math
+import numpy
+import cairo
+from numpy.linalg import norm
+
+#############
+# Functions #
+#############
+
+# Test if the given point is inside of an ellipse center at (0, 0)
+def inside_ellipse(pt, (w, h)):
+    if (pt[0]**2/(w/2.0)**2 + pt[1]**2/(h/2.0)**2 <= 1):
+        return True
+    return False
+
+def ellipse_func(angle, (w, h)):
+    return numpy.array((w*math.cos(angle)/2, 
+                        h*math.sin(angle)/2))
+
+# Split up the string into lines in an attempt to fit it inside of an 
+# ellipse. The arguments are:
+#
+# * txt    = the text to format
+# * width  = the length (in characters) of the longest line
+# * nlines = a guess at the number of lines that will fit
+#
+# If this function cannot properly fit the text it will return None. You
+# don't need to call this function directly - use 'format_text' below.
+#
+def format_text_attempt(txt, width, nlines):
+    def calc_ellipse(a, b, y):
+        return math.sqrt((a**2) * (1-y**2/b**2))
+
+    pos = 0
+    line = 0
+    lines = []
+    while (pos < len(txt)):
+        try:
+            x = calc_ellipse(width/2.0, nlines/2.0, line-nlines/2.0)
+        except ValueError:
+            return None
+        nchars = int(round(2*x))
+
+        # Take as many words as we can, up to 'nchars'.
+        if (pos+nchars >= len(txt)):
+            # Take everything to the end of the string
+            last = len(txt)
+        else:
+            i = txt.rfind(" ", pos, pos+nchars)
+            if (i == -1):
+                # No spaces left, take the whole substring
+                last = pos+nchars
+            else:
+                # Take the substring
+                last = i+1
+
+        if (last > pos):
+            lines.append(txt[pos:last])
+        pos = last
+        line += 1
+    return lines
+
+# Formats the given text inside of an ellipse. The 'width' argument is the
+# length of the longest line.
+def format_text(txt, width):
+    n = 1
+    while 1:
+        lines = format_text_attempt(txt, width, n)
+        if (lines != None):
+            return lines
+        n += 1
+
+# Renders some text into an elliptical shape.
+def render_wrapped_text(font, txt, nchars):
+    # Now automatically wrap the text so it fits in an ellipse
+    lines = format_text(txt, nchars)
+    # Render each line of text into it's own surface
+    surfs = []
+    width = 0
+    height = 0
+    for line in lines:
+        surf = font.render(line, True, (0,0,0))
+        surfs.append(surf)
+        # Keep track of the width and height
+        width = max(width, surf.get_width())
+        height += surf.get_height()
+    # Create a surface large enough to fit all the text
+    img = pygame.Surface((width, height)).convert_alpha()
+    img.fill((0,0,0,0))
+    y = 0
+    for surf in surfs:
+        # Make the line centered in the text box
+        x = width/2 - surf.get_width()/2
+        img.blit(surf, (x, y))
+        y += surf.get_height()
+    return img
+
+# Creates a surface to rendering with cairo
+def create_cairo_surface(w, h):
+    data = array.array('c', chr(0)*w*h*4)
+    stride = w * 4
+    surface = cairo.ImageSurface.create_for_data(
+        data, cairo.FORMAT_ARGB32, w, h, stride)
+    return surface
+
+# Turns the cairo surface into a pygame surface
+def cairo_surface_to_pygame(surface):
+    return pygame.image.frombuffer(
+        str(surface.get_data()),
+        (surface.get_width(), surface.get_height()), "RGBA")
+
+###########
+# Classes #
+###########
+
+class SpeechBalloon(object):
+    # This controls how wide the spout is (in degrees)
+    spoutSpread = 30
+    # The fill color of the speech balloon
+    bgcolor = (1, 1, 1)
+    # The border color
+    borderColor = (0, 0, 0)
+    # The starting position (tip of the spout)
+    start = None
+    # The ending position (center of the ellipse)
+    end = None
+    # The speech balloon surface
+    surf = None
+    # The offset into the surface of the location of the spout's tip
+    tipOffset = None
+    # The region occupied by the ball of the speech balloon (offset within
+    # the surface).
+    ballRect = None
+    # The amount of padding to add around the ellipse
+    padding = 40
+
+    def __init__(this, (w, h), vec):
+        this.ellipseSize = (w + this.padding, h + this.padding)
+        this.spoutVec = vec
+
+    def create(this):
+        (w, h) = this.ellipseSize
+
+        # Figure out how big to make the surface
+        spoutVec = this.spoutVec
+        spoutLen = norm(spoutVec)
+
+        ballRect = pygame.Rect(0, 0, 0, 0)
+        ballRect.size = (w, h)
+        ballRect.center = (0, 0)
+
+        rect = ballRect.union(pygame.Rect((spoutVec, (0, 0))))
+        center = numpy.array((-rect.x, -rect.y))
+        ballRect.center = center
+
+        # Figure out where the tip of the spout is located
+        tipOffset = center + spoutVec
+
+        # Draw with Cairo
+        surface = create_cairo_surface(rect.w, rect.h)
+
+        cnt = cairo.Context(surface)
+        cnt.set_line_width(2)
+
+        def draw_ellipse(angle=None, spread=None):
+            # Draw an ellipse for the "ball" part
+            cnt.save()
+            cnt.translate(ballRect.center[0], ballRect.center[1])
+            cnt.scale(ballRect.w, ballRect.h)
+            if (angle != None):
+                cnt.arc(0, 0, 0.49, angle+spread, angle-spread)
+            else:
+                cnt.arc(0, 0, 0.49, 0, 2*math.pi)
+            cnt.restore()
+            # Set the fill color
+            cnt.set_source_rgb(*this.bgcolor)
+            cnt.fill_preserve()
+            # Set the border color
+            cnt.set_source_rgb(*this.borderColor)
+            cnt.stroke()
+
+        if (not inside_ellipse(tipOffset-center, (w, h))):
+            # Calculate the angle the tip makes with the center of the ellipse
+            dist = tipOffset - center
+            angle = math.atan2(dist[1]*w, dist[0]*h)
+
+            # Calculate the points where the tip attaches
+            spread = math.radians(this.spoutSpread/2)
+            pt1 = ellipse_func(angle+spread, (w, h))
+            pt2 = ellipse_func(angle-spread, (w, h))
+
+            # Render the tip. . Note that we have to shift the points inwards 
+            # (towards the center of the balloon) a little bit to avoid 
+            # any seams.
+            n = 0.96
+            cnt.move_to(*(center + pt1*n))
+            cnt.line_to(*tipOffset)
+            cnt.line_to(*(center + pt2*n))
+            cnt.set_source_rgb(*this.bgcolor)
+            cnt.fill_preserve()
+            cnt.stroke()
+
+            # Draw an ellipse for the "ball" part
+            draw_ellipse(angle, spread)
+
+            # Now render the tip outline. Again we have to shift the attachment
+            # points inward to avoid gaps.
+            n = 0.98
+            cnt.move_to(*(center + pt1*n))
+            cnt.line_to(*tipOffset)
+            cnt.line_to(*(center + pt2*n))
+            cnt.set_source_rgb(*this.borderColor)
+            cnt.stroke()
+
+        else:
+            draw_ellipse()
+
+        this.surf = cairo_surface_to_pygame(surface)
+        this.ballRect = ballRect
+        this.tipOffset = tipOffset
+
+
+########
+# Main #
+########
+
+if (__name__ == "__main__"):
+    pygame.init()
+    display = pygame.display.set_mode((640,480))
+    display.fill((0,0,0))
+
+    # Render the text we want to display. This function will automatically
+    # wrap it into an elliptical shape. You can control it's overall size 
+    # and shape with the width parameter (maximum number of characters in
+    # the longest line of text).
+    txt = "Lorem ipsum dolor sit amet, consectetur adipisicing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua."
+
+    font = pygame.font.SysFont("sans", 16)
+    textImage = render_wrapped_text(font, txt, 30)
+
+    balloon = None
+    lastPos = None
+    done = False
+    while not done:
+        # Process events
+        for event in pygame.event.get():
+            if (event.type == pygame.KEYDOWN and
+                event.key == pygame.K_ESCAPE or 
+                event.type == pygame.QUIT):
+                done = True
+                break
+
+        # Create a speech balloon stretching from the center of the screen
+        # to the mouse cursor.
+        pos = pygame.mouse.get_pos()
+        if (pos != lastPos):
+            # Note it's somewhat inefficient to do this on every frame (done 
+            # here just for fun). Normally you would create this object once, 
+            # then re-use the rendered image.
+            (w, h) = textImage.get_size()
+            start = display.get_rect().center
+            balloon = SpeechBalloon((w, h), numpy.array(start)-numpy.array(pos))
+            balloon.create()
+            balloon.start = start
+            # Render some text in the balloon
+            r = textImage.get_rect()
+            r.center = balloon.ballRect.center
+            if (balloon.surf):
+                balloon.surf.blit(textImage, r)
+            lastPos = pos
+
+        # Now render the balloon and text on the display
+        (xp, yp) = balloon.start
+        display.fill((220,220,255))
+        if (balloon.surf):
+            r = display.blit(balloon.surf, 
+                             (xp-balloon.tipOffset[0], yp-balloon.tipOffset[1]))
+
+        pygame.display.flip()
+
+}}}

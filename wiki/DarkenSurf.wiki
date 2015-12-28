@@ -1,0 +1,37 @@
+#summary Debug utils.darken_surf function
+
+{{{
+
+# Darken the image by the given amount
+def darken_surf(img, amount):
+    alpha = pygame.surfarray.pixels_alpha(img)
+    rgbarray = pygame.surfarray.array3d(img)
+    src = Numeric.array(rgbarray)
+    dest = Numeric.zeros(rgbarray.shape)
+    # Use the cross-fade technique (found in pygame documentation) to 
+    # darken the image.
+    dest[:] = (0, 0, 0)
+    diff = (dest - src) * (amount/255.0)
+    new = src + diff.astype(Numeric.UInt8)
+    newsurf = pygame.surfarray.make_surface(new).convert_alpha()
+    try:
+        pygame.surfarray.pixels_alpha(newsurf)[:] = alpha
+    except:
+        print Numeric.__version__
+        print pygame.display.get_surface()
+        print img, newsurf
+        print Numeric.size(pygame.surfarray.pixels_alpha(newsurf)[:]), \
+            Numeric.size(alpha)
+        raise Exception()
+    return newsurf
+
+}}}
+
+The "darken_surf" function isn't used a whole lot in the program. So if you want to bypass the "alignment error" that is raised here, replace this function with:
+
+{{{
+
+def darken_surf(img, amount):
+    return img
+
+}}}
